@@ -913,10 +913,39 @@ static int ifaceHasIpv4(const char* ifn) {
     return up;
 }
 
+// The car's packet filter is never switched off. Wireless Android Auto needs TCP 5277 let through on uap0 / wfd0 by
+// the pf_aa rules in pf.conf ("Install PF Rules" in Settings, or `nbt-aad --pf-install --load`). Until v1.9.x the
+// daemon ran `pfctl -d` at every start unless NBT_KEEP_PF=1 was set, which opened every port of the head unit on the
+// hotspot; NBT_KEEP_PF is not read any more.
+// true = the rules are in pf.conf, loaded, and the filter is on (loaded and switched on here if pf.conf has them but
+// the running filter does not: `pfctl -f <pf.conf> -e`, nothing written). false = fail closed: no listener.
+static bool ensurePacketFilter(const char* why) {
+    printf("[Firewall] %s: checking the Android Auto rules of the packet filter\n", why);
+    fflush(stdout);
+    void (*oldChld)(int) = signal(SIGCHLD, SIG_DFL);   // pf_aa needs pclose()'s status (it resets SIGCHLD itself too)
+    char a0[] = "nbt-aad", check[] = "--check", act[] = "--activate";
+    char* checkArgv[] = { a0, check, NULL };
+    int rc = nbt::pfaa::run(2, checkArgv);
+    if (rc == 9) {
+        char* actArgv[] = { a0, act, NULL };
+        printf("[Firewall] rules are in pf.conf but not active: loading pf.conf and switching the filter on\n");
+        rc = nbt::pfaa::run(2, actArgv);
+    }
+    signal(SIGCHLD, oldChld);
+    if (rc == 0) printf("[Firewall] packet filter on with TCP 5277 allowed on uap0 / wfd0\n");
+    else
+        printf("[Firewall] ERROR (pf_aa %d): the Android Auto rules are not in place, so wireless Android Auto stays "
+               "OFF (the packet filter is not switched off any more). Fix: iDrive app Settings -> \"Install PF "
+               "Rules\" (or `nbt-aad --pf-install --load`), then Restart\n", rc);
+    fflush(stdout);
+    return rc == 0;
+}
+
 // Ignition off/on while the head unit stays up (it only shuts down ~10 min after ignition off) switches the car's
 // Wi-Fi access point off and on again under a daemon that keeps running. Car reports 2026-10-29 (F31, Supra): after
 // that the phone takes the Wi-Fi details over Bluetooth but never connects, until Force Stop + Start, i.e. until
-// a new process runs 'pfctl -d' and opens a new listening socket. Redo both here.
+// a new process sets up the packet filter path and opens a new listening socket. Redo both here: the filter stays
+// on, its Android Auto rules are re-checked (re-loaded from pf.conf if the restart left them out).
 // DIRECT mode, nbt-aad's own passphrase (wfd_own.hpp): set once per daemon start through the car's connection
 // manager, and again after the car switched its Wi-Fi off and on under us (it may then run its own group again).
 static volatile bool g_wfdOwnApplied = false;   // also read by wfdWatchThread
@@ -1068,11 +1097,8 @@ static void recoverWifiPath(const char* why) {
         g_wfdOwnTried = 0;
         printf("[WfdOwn] %s: nbt-aad's passphrase is set again before the next phone link\n", why);
     }
-    if (nbt::envFlag("NBT_KEEP_PF") != 1) {
-        int rc = system("pfctl -d");
-        printf("[Wireless] %s: 'pfctl -d' returned %d (%s)\n", why, rc,
-               rc == 0 ? "the packet filter was ON again and is now off" : "packet filter already off");
-    }
+    printf("[Wireless] %s: re-checking the packet filter and re-creating the listener\n", why);
+    ensurePacketFilter(why);
     if (g_tcp) g_tcp->requestRebind(why);
     fflush(stdout);
 }
@@ -2366,14 +2392,10 @@ int main(int argc, char* argv[]) {
         if (pre && strip) unsetenv("LD_PRELOAD");
     }
 
-    // Drop the packet filter so the phone can reach the stock AA port (5277) on uap0.
-    // Set NBT_KEEP_PF=1 to leave the firewall alone.
-    if (nbt::envFlag("NBT_KEEP_PF") == 1) {
-        printf("[Main] NBT_KEEP_PF=1: leaving packet filter untouched.\n");
-    } else {
-        int rc = system("pfctl -d");
-        printf("[Main] 'pfctl -d' (disable packet filter) returned %d\n", rc);
-    }
+    // The packet filter stays on; wireless Android Auto runs only with its rules in place (fail closed).
+    if (nbt::envFlag("NBT_KEEP_PF") >= 0)
+        printf("[Main] NBT_KEEP_PF is set but no longer used: the packet filter is never switched off\n");
+    const bool pfReady = ensurePacketFilter("start");
 
     signal(SIGINT,  signalHandler);
     signal(SIGTERM, signalHandler);
@@ -2504,11 +2526,17 @@ int main(int argc, char* argv[]) {
     g_session.setMediaStatusCallback(&onMediaStatus, NULL);
     g_session.setPhoneCallCallback(&onPhoneCall, NULL);
 
-    if (!tcp_server.start()) {
-        printf("[Main] Fatal: Failed to start TCP server on port %u\n", (unsigned)g_aaPort);
-        return 1;
+    if (pfReady) {
+        if (!tcp_server.start()) {
+            printf("[Main] Fatal: Failed to start TCP server on port %u\n", (unsigned)g_aaPort);
+            return 1;
+        }
+        g_tcp = &tcp_server;
+    } else {
+        printf("[Main] wireless Android Auto OFF: no listener on port %u and no Wi-Fi details over Bluetooth, because "
+               "the packet filter rules are missing (see [Firewall] above). Android Auto over USB is not affected.\n",
+               (unsigned)g_aaPort);
     }
-    g_tcp = &tcp_server;
     g_kombiNav.start(&g_most);     // idle until "Turn arrows in cluster/HUD" (or NBT_KOMBI_NAV=1) is on; before
                                    // g_most starts: NBT_CLUSTER=6wa attaches to it
     g_kombiMedia.start(audio_mode != nbt::AUDIO_MODE_BT);   // idle until the phone plays something
@@ -2625,7 +2653,9 @@ int main(int argc, char* argv[]) {
     if (!g_most.start("NBTAAD_MOST"))
         printf("[Main] MOST unavailable: continuing Android Auto without MOST features.\n");
 
-    if (nbt::wirelessEnabledForTransport()) {
+    if (!pfReady) {
+        printf("[Main] Wireless bring-up thread not started (packet filter rules missing).\n");
+    } else if (nbt::wirelessEnabledForTransport()) {
         pthread_t wt;
         if (pthread_create(&wt, NULL, &wirelessThread, NULL) == 0) {
             pthread_detach(wt);

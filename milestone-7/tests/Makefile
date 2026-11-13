@@ -137,7 +137,7 @@ TESTS := $(patsubst SRC_%,%,$(filter SRC_test_%,$(.VARIABLES)))
 .PHONY: all check tsan clean $(TESTS) $(addprefix run-,$(TESTS)) run-test_media_payload run-test_aa_proto32 run-test_schema
 all: $(TESTS)
 
-check: $(addprefix run-,$(TESTS)) run-test_aa_proto32 run-test_media_payload run-test_schema run-test_favourite_resources run-test_rhmi_actions run-test_settings_refresh tsan
+check: $(addprefix run-,$(TESTS)) run-test_aa_proto32 run-test_media_payload run-test_schema run-test_favourite_resources run-test_rhmi_actions run-test_settings_refresh run-test_pf_aa_tool tsan
 	@echo "[CHECK] all host tests passed"
 
 .PHONY: run-test_favourite_resources
@@ -183,6 +183,11 @@ $(OUT)/test_session_bye: CXXFLAGS += -include stub_cryptor.hpp
 
 # Not here: rhmiapp_host_test, which dlopens a host build of rhmiapp/libNbtAad.so linked against
 # rhmiapp_fake_appframework.cpp.
+
+# The pf_aa tool itself against a fake pfctl (never `pfctl -d`, --activate, --install / --uninstall).
+run-test_pf_aa_tool: | $(OUT)
+	@cd $(ROOT) && sh tests/test_pf_aa_tool.sh $(HOST_CXX) > tests/$(OUT)/test_pf_aa_tool.log 2>&1 \
+	  && echo "[PASS] test_pf_aa_tool.sh" || { echo "[FAIL] test_pf_aa_tool.sh"; tail -20 tests/$(OUT)/test_pf_aa_tool.log; exit 1; }
 
 # Compiles the payload-boundary block out of aa_session.cpp itself.
 run-test_media_payload:

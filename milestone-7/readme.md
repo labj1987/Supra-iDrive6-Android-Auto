@@ -965,7 +965,7 @@ On/off settings accept `1`/`0`; most also accept `on`/`off`, `yes`/`no` and `tru
 | `NBT_HIDE_IDLE` | `0` | iDrive gets the screen while no phone is connected. Off = overlay stays up for the whole run |
 | `NBT_GEAR_ACTION` | `0` | Reverse-gear handling |
 | `NBT_CTL` | `0` | Single-instance control port (UDP 127.0.0.1:52790) |
-| `NBT_KEEP_PF` | set to `1` | Don't run `pfctl -d` at start. Only with the Android Auto rules in `pf.conf`: `pf_aa --install` adds both (see [Troubleshooting](#troubleshooting)) |
+| `NBT_KEEP_PF` | - | No longer used: the packet filter is never switched off; wireless Android Auto needs the `pf_aa` rules (see [Troubleshooting](#troubleshooting)) |
 
 ### Advanced / experimental
 
@@ -1182,7 +1182,8 @@ Useful daemon log lines:
 - `[Wireless] opened /dev/btsppN`: the phone opened the Android Auto Bluetooth link.
 - `[Wireless] ... companion app (BCL), not Android Auto` / `releasing /dev/btspp0`: a MyBMW / Supra app link was
   skipped.
-- `'pfctl -d' ... returned N`: the firewall step (0 = OK).
+- `[Firewall] packet filter on with TCP 5277 allowed`: the firewall step is OK; `[Firewall] ERROR`: the `pf_aa` rules
+  are missing and wireless Android Auto stays off (see Troubleshooting).
 
 ## Troubleshooting
 
@@ -1215,16 +1216,17 @@ follow the list above.
 ### Phone joins the Wi-Fi but no picture
 
 The phone connects to TCP 5277 on `uap0` (172.16.224.1), or on `wfd0` (172.16.222.1) over Wi-Fi Direct. The car's
-packet filter blocks that port, so the daemon runs `pfctl -d` at start. The log shows `'pfctl -d' ... returned 0` when
-it worked. If the return value isn't 0 (one car returned 256), post the log.
+packet filter blocks that port. nbt-aad never switches the filter off (older versions ran `pfctl -d` at every start,
+which opened every port of the head unit to the hotspot): at start it checks for the Android Auto rules (`[Firewall]`
+log lines), loads them if they are in `pf.conf` but not active, and without them keeps wireless Android Auto off
+(`[Firewall] ERROR ... wireless Android Auto stays OFF`). Android Auto over USB is not affected.
 
-**Keeping the packet filter on (`pf_aa`, one time):** instead of switching the whole filter off, let the port through
-it. Easiest (rhmiapp-47 + v1.9.44): **Install PF Rules** at the bottom of the Android Auto Settings page. The row shows
+**The packet filter rules (`pf_aa`, one time, required for wireless):** let the port through the filter. Easiest (rhmiapp-47 + v1.9.44): **Install PF Rules** at the bottom of the Android Auto Settings page. The row shows
 `Writing rules...` -> `Rules successfully written` -> `Rules active`: pf_aa is built into nbt-aad (`nbt-aad --pf-install
 --load`; from a shell `--pf-check` / `--pf-uninstall` too) and `--load` applies the rules at once (`pfctl -f`, `-e`), no
 restart needed. **Check PF Rules** shows `Rules in place` (active), `Rules in place, not active` or `Rules not in place`;
-**Uninstall PF Rules** restores the stock file and switches the filter off as nbt-aad did before (`Rules successfully
-removed` -> `Packet filter off, as before`). The app writes pf_aa's output to the app log (`pf_aa: ...` lines, then `pf_aa exit N`). By hand, copy `pf_aa` from the release next to
+**Uninstall PF Rules** restores the stock file and keeps the filter on (`Rules successfully removed` -> `Stock rules,
+filter on`); wireless Android Auto is then off until the rules are installed again. The app writes pf_aa's output to the app log (`pf_aa: ...` lines, then `pf_aa exit N`). By hand, copy `pf_aa` from the release next to
 the daemon and install the rules once:
 
 ```
@@ -1235,10 +1237,11 @@ chmod 755 /opt/aa/pf_aa
 
 `--install` works on `/fs/sda0/etc/pf.conf` (the car's `/etc/pf.conf`; `/fs/sda0` is remounted read-write only for
 the edit). If the Android Auto rules are not there yet it backs the stock file up to `/opt/aa/pf.bak`, appends four
-lines (TCP 5277 both ways on `uap0` and `wfd0`) and adds `NBT_KEEP_PF=1` to `/opt/aa/nbt-aad.env`. The new file is
+lines (TCP 5277 both ways on `uap0` and `wfd0`). The new file is
 checked with `pfctl -n` before and after writing; if it does not parse, `pf.conf` is put back as it was. Restart the
-head unit afterwards. `pf_aa --check` reports (`rules look good`); `pf_aa --uninstall` checks that `pf.bak` is the
-stock file, restores `pf.conf` from it and removes `NBT_KEEP_PF`. A software update brings the stock `pf.conf` back;
+head unit afterwards (or `--install --load`). `pf_aa --check` reports (`rules look good`); `pf_aa --activate` loads
+`pf.conf` and switches the filter on without writing anything; `pf_aa --uninstall` checks that `pf.bak` is the
+stock file, restores `pf.conf` from it and removes an `NBT_KEEP_PF` line left by pf_aa 1.0-1.3. A software update brings the stock `pf.conf` back;
 install again then. Car-verified on the Supra (the same four lines added by hand). pf_aa 1.0 stopped before changing
 anything with `cannot write /dev/shmem/pf_aa-check.conf: Function not implemented` (QNX's RAM disk has no `fsync`);
 1.1 (first line `pf_aa 1.1: ...`) fixes that; `--install` and `--check` car-verified on the Supra 2026-11-06.
@@ -1634,7 +1637,7 @@ listed in `tests/Makefile`; binaries and logs go to `tests/build/`.
 - Force Stop / Restart: the v1.8.3 state-file fix needs a car test.
 - iDrive still reacts to touches while Android Auto is shown (the UDP touch stream goes to both).
 - CarPlay after Android Auto (v1.8.6): confirm the CarPlay picture is no longer zoomed on a `1180_480` car.
-- Firewall: `pf_aa --install` (one-time pf.conf rule + `NBT_KEEP_PF=1`) is the opt-in; making it the install default is open.
+- Firewall: the `pf_aa` rules are required for wireless Android Auto (the filter is never switched off); `tools/install.sh` installs them.
 - The older CCS controller: knob rotation (v1.8.4) needs a car confirmation, including the turn direction.
 - `carplay.ini` screen codings such as `1180_480` or `900_540` are the CarPlay picture size, not always the panel: set
   `NBT_SCREEN` to the real panel size (e.g. `1280x480`, `1440x540`) if Android Auto doesn't fill the screen.

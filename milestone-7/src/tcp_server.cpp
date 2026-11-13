@@ -229,7 +229,7 @@ bool TcpServer::start() {
     pthread_create(&connector_thread_, NULL, &TcpServer::connectorThreadStub, this);
 
     printf("[TcpServer] Bi-directional Android Auto engine active on port %u (Listener + Auto-Connector)\n", port_);
-    printf("[TcpServer] Notice: If phone does not connect, verify firewall is disabled via 'pfctl -d'.\n");
+    printf("[TcpServer] Notice: if the phone does not connect, check the packet filter rules: nbt-aad --pf-check\n");
     return true;
 }
 

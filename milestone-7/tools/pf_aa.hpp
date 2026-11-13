@@ -3,8 +3,8 @@
 #ifndef NBT_TOOLS_PF_AA_HPP
 #define NBT_TOOLS_PF_AA_HPP
 
-// pf_aa (tools/pf_aa.cpp): let Android Auto through the car's packet filter once, instead of the daemon switching the
-// whole filter off with `pfctl -d` at every start. The stock /fs/sda0/etc/pf.conf (loaded at boot by start_net.sh,
+// pf_aa (tools/pf_aa.cpp): let Android Auto through the car's packet filter once. nbt-aad never switches the filter
+// off (it used to run `pfctl -d` at every start); without these rules wireless Android Auto stays off. The stock /fs/sda0/etc/pf.conf (loaded at boot by start_net.sh,
 // `pfctl -f /etc/pf.conf -e`) blocks everything and opens only CarPlay's ports on the hotspot (uap0) and Miracast's on
 // the Wi-Fi Direct group (wfd0). The phone's Android Auto link is one TCP connection to 5277 on either, so four lines
 // appended at the end are enough (car-verified on the Supra, 2026-11-05: appended by hand, rebooted, AA connected).
@@ -27,8 +27,8 @@ static const char* const kUapRules =
 static const char* const kWfdRules =
     "pass quick on wfd0 proto tcp from 172.16.222/24 to 172.16.222.1 port 5277 keep state\n"
     "pass quick on wfd0 proto tcp from 172.16.222.1 to 172.16.222/24 port 5277 keep state\n";
-static const char* const kEnvKey = "NBT_KEEP_PF";
-static const int kMaxEnvSettings = 15;   // the iDrive app passes only the first 15 settings of nbt-aad.env
+static const char* const kEnvKey = "NBT_KEEP_PF";   // no longer used (the filter is never switched off); an old
+                                                    // line is removed by --uninstall
 
 // fsync()'s answer for a file just written. A file system with nothing to flush may say so with an error instead of 0:
 // QNX's /dev/shmem (RAM) answers ENOSYS - car, 2026-11-06: "cannot write /dev/shmem/pf_aa-check.conf: Function not
@@ -121,56 +121,9 @@ inline std::string withRules(const std::string& conf, const Coverage& have) {
     return out;
 }
 
-struct EnvEdit {
-    std::string text;   // the new nbt-aad.env
-    bool changed;       // text differs from the input
-    int position;       // 1-based position of NBT_KEEP_PF among the file's settings
-    int settings;       // settings in the new file
-};
-
-// nbt-aad.env with NBT_KEEP_PF=1: an existing NBT_KEEP_PF line with another value is rewritten, none = appended.
-// Settings are the non-blank lines that do not start with '#' (the app's rule).
-inline EnvEdit setKeepPf(const std::string& env) {
-    EnvEdit r;
-    r.changed = false;
-    r.position = 0;
-    r.settings = 0;
-    const std::string key = std::string(kEnvKey) + "=";
-    size_t start = 0;
-    while (start < env.size()) {
-        size_t end = env.find('\n', start);
-        bool nl = end != std::string::npos;
-        if (!nl) end = env.size();
-        std::string line = env.substr(start, end - start);
-        size_t i = line.find_first_not_of(" \t\r");
-        if (i != std::string::npos && line[i] != '#') {
-            ++r.settings;
-            if (line.compare(i, key.size(), key) == 0) {
-                std::string v = line.substr(i + key.size());
-                size_t e = v.find_last_not_of(" \t\r");
-                v = e == std::string::npos ? std::string() : v.substr(0, e + 1);
-                if (!r.position) r.position = r.settings;
-                if (v != "1") {
-                    line = key + "1";
-                    r.changed = true;
-                }
-            }
-        }
-        r.text += line;
-        if (nl) r.text += '\n';
-        start = end + 1;
-    }
-    if (!r.position) {
-        if (!r.text.empty() && r.text[r.text.size() - 1] != '\n') r.text += '\n';
-        r.text += key + "1\n";
-        r.position = ++r.settings;
-        r.changed = true;
-    }
-    return r;
-}
-
-// nbt-aad.env without any NBT_KEEP_PF setting (pf_aa --uninstall: with the stock pf.conf back, the daemon has to switch
-// the filter off again). Comment lines stay. removed: how many setting lines were dropped.
+// nbt-aad.env without any NBT_KEEP_PF setting (pf_aa --uninstall removes the line older versions added; nothing reads
+// it any more). Settings are the non-blank lines that do not start with '#'; comment lines stay. removed: how many
+// setting lines were dropped.
 inline std::string dropKeepPf(const std::string& env, int* removed) {
     const std::string key = std::string(kEnvKey) + "=";
     std::string out;

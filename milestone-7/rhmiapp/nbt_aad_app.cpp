@@ -453,7 +453,7 @@ const char* const kNoLogFlag        = "no-log";
 const unsigned    kPfRowButton[3]  = { 135, 140, 141 };
 const unsigned    kPfRowLabel[3]   = { 29, 30, 31 };      // Install / Check / Uninstall PF Rules
 enum { kTxtPfWriting = 32, kTxtPfWritten = 33, kTxtPfActive = 34, kTxtPfChecking = 35, kTxtPfInPlace = 36,
-       kTxtPfInPlaceIdle = 37, kTxtPfMissing = 38, kTxtPfRemoving = 39, kTxtPfRemoved = 40, kTxtPfStockOff = 41,
+       kTxtPfInPlaceIdle = 37, kTxtPfMissing = 38, kTxtPfRemoving = 39, kTxtPfRemoved = 40, kTxtPfStockOn = 41,
        kTxtPfNotActive = 42, kTxtPfFailed = 43 };
 const char* const kPfAaOut         = "/dev/shmem/nbt-aad-pf_aa.out";
 const char* const kPfAaEmbedMark   = "(built into nbt-aad)";   // in nbt-aad's pf_aa banner (src/pf_aa_embed.cpp)
@@ -2215,7 +2215,7 @@ void servicePfOps(bmw::PluginApp* app) {
             if (rc == 0) { first = kTxtPfWritten; second = kTxtPfActive; }
             else if (rc == 8) { first = kTxtPfWritten; second = kTxtPfNotActive; }
         } else if (g_pfOp == kPfUninstall) {
-            if (rc == 0) { first = kTxtPfRemoved; second = kTxtPfStockOff; }
+            if (rc == 0) { first = kTxtPfRemoved; second = kTxtPfStockOn; }   // the filter stays on (pf_aa 1.4)
             else if (rc == 8) { first = kTxtPfRemoved; second = kTxtPfNotActive; }
         } else {
             first = rc == 0 ? kTxtPfInPlace : rc == 9 ? kTxtPfInPlaceIdle : rc == 7 ? kTxtPfMissing : kTxtPfFailed;
