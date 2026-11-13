@@ -125,6 +125,7 @@
 #include "spp_link_policy.hpp"
 #include "../tools/pf_aa.hpp"
 #include "env_file.hpp"
+#include "phone_gate.hpp"
 #include "spp_direction.hpp"
 #include "neutral_resume.hpp"
 #include "tile_process.hpp"
@@ -875,6 +876,58 @@ static bool cpLiveRetune() {
     return nbt::VideoManager::cpHandoff() && !(e && e[0] == '0');
 }
 
+// The phone that completed the Bluetooth Wi-Fi hand-off is the only TCP client let in (phone_gate.hpp).
+static nbt::PhoneGate g_gate;
+static pthread_mutex_t g_gateMutex = PTHREAD_MUTEX_INITIALIZER;
+static uint32_t gateNowMs() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint32_t)ts.tv_sec * 1000u + (uint32_t)(ts.tv_nsec / 1000000);
+}
+static bool gateEnabled() { return nbt::envFlag("NBT_AA_GATE") != 0; }   // NBT_AA_GATE=0: any client on the AA subnets
+static void gateNewLink() {
+    pthread_mutex_lock(&g_gateMutex);
+    g_gate.newLink();
+    pthread_mutex_unlock(&g_gateMutex);
+}
+static void gateArm() {
+    pthread_mutex_lock(&g_gateMutex);
+    g_gate.arm(gateNowMs());
+    pthread_mutex_unlock(&g_gateMutex);
+    printf("[Gate] Wi-Fi details handed over Bluetooth: the next phone connection on the Android Auto network is let in "
+           "(%u s to connect)%s\n", (unsigned)(nbt::PhoneGate::kJoinWindowMs / 1000),
+           gateEnabled() ? "" : " - gate OFF (NBT_AA_GATE=0)");
+}
+static void gateLinkAlive() {
+    pthread_mutex_lock(&g_gateMutex);
+    g_gate.linkAlive(gateNowMs());
+    pthread_mutex_unlock(&g_gateMutex);
+}
+static void gateLinkClosed() {
+    pthread_mutex_lock(&g_gateMutex);
+    g_gate.linkClosed(gateNowMs());
+    pthread_mutex_unlock(&g_gateMutex);
+}
+static bool gateAccept(uint32_t hostIp, void*) {
+    pthread_mutex_lock(&g_gateMutex);
+    nbt::PhoneGate::Verdict v = g_gate.check(hostIp, gateNowMs());
+    uint32_t bound = g_gate.boundIp();
+    pthread_mutex_unlock(&g_gateMutex);
+    char ip[24], bip[24];
+    snprintf(ip, sizeof ip, "%u.%u.%u.%u", hostIp >> 24, (hostIp >> 16) & 255, (hostIp >> 8) & 255, hostIp & 255);
+    snprintf(bip, sizeof bip, "%u.%u.%u.%u", bound >> 24, (bound >> 16) & 255, (bound >> 8) & 255, bound & 255);
+    if (v == nbt::PhoneGate::kAccept) {
+        printf("[Gate] %s let in: the phone of the current Bluetooth hand-off\n", ip);
+        return true;
+    }
+    bool off = !gateEnabled();
+    printf("[Gate] %s %s: %s\n", ip, off ? "let in anyway (NBT_AA_GATE=0)" : "REFUSED",
+           v == nbt::PhoneGate::kRejectNotArmed ? "no phone was given the Wi-Fi details over Bluetooth just now"
+                                                : "another device than the phone of this hand-off");
+    if (v == nbt::PhoneGate::kRejectOtherPhone && !off) printf("[Gate] (this hand-off's phone is %s)\n", bip);
+    return off;
+}
+
 static nbt::TcpServer* g_tcp = NULL;           // set once the listener runs (wireless recovery re-creates it)
 static nbt::UsbAccessory* g_usb = NULL;        // set while Android Auto over USB runs (NBT_USB=1)
 static const uint32_t kUsbByeWaitMs = 500;     // of the 3 s before the iDrive app sends SIGTERM after 'quit'
@@ -1459,6 +1512,7 @@ static void* wirelessThread(void*) {
         const char* me = getenv("NBT_WPP_MODE");
         if (me && *me) mode = atoi(me);
         logStations("before handshake");
+        gateNewLink();   // the gate opens when this link is given the Wi-Fi details (gateArm via the hook)
         bool ok = nbt::runWirelessHandshake(fd, ap, g_aaPort, 10000, mode);
         if (!ok && nbt::lastLinkForeign()) {
             g_btLink = 0;
@@ -1480,6 +1534,7 @@ static void* wirelessThread(void*) {
             while (g_running) {
                 bool alive = nbt::wppService(fd, 1000, ap, g_aaPort);
                 ++tick;
+                if (alive) gateLinkAlive();
                 if (wirelessSessionActive()) everActive = true;
                 if (!alive && nbt::lastLinkForeign()) { if (!pinned) markSppForeign(dev); break; }
                 if (!alive) {
@@ -1508,6 +1563,7 @@ static void* wirelessThread(void*) {
             }
             g_btLink = 0;
             close(fd);
+            gateLinkClosed();
             if (!pinned) noteSppDirection(dev, nbt::lastLinkSpokeWpp() || everActive);
             // A phone that joined the Wi-Fi usually drops Bluetooth before its TCP connect arrives: give it a
             // few seconds before counting this as a "never joined" try.
@@ -1537,6 +1593,7 @@ static void* wirelessThread(void*) {
         } else {
             g_btLink = 0;
             close(fd);
+            gateLinkClosed();   // details may have gone out: the same short grace as a link that closed after them
             ++s_fails;
             // The phone closed a link that was already open without accepting the Wi-Fi start.
             // Drop and re-add the Android Auto Bluetooth service so the next try is a fresh registration.
@@ -2515,6 +2572,8 @@ int main(int argc, char* argv[]) {
     }
     nbt::TcpServer tcp_server(g_aaPort);
     tcp_server.setConnectionCallback(&onClientConnected, &tcp_server);
+    tcp_server.setAcceptFilter(&gateAccept, NULL);
+    nbt::setCredentialsSentHook(&gateArm);   // the gate opens when a phone is given the Wi-Fi details
     g_session.setDisconnectCallback(&onSessionEnded, &tcp_server);
     g_session.setVideoFrameCallback(&onVideoFrame, &video);
     g_session.setCodecConfigCallback(&onCodecConfig, &video);

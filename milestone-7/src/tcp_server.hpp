@@ -10,6 +10,8 @@
 namespace nbt {
 
 typedef void (*ClientConnectedCallback)(int client_socket_fd, void* user_data);
+// Inbound (wireless) clients that passed the subnet filter: true = may start a session. host_ip in host order.
+typedef bool (*AcceptFilterCallback)(uint32_t host_ip, void* user_data);
 
 class TcpServer {
 public:
@@ -20,6 +22,7 @@ public:
     void stop();
 
     void setConnectionCallback(ClientConnectedCallback callback, void* user_data = NULL);
+    void setAcceptFilter(AcceptFilterCallback filter, void* user_data = NULL) { accept_filter_ = filter; accept_filter_data_ = user_data; }
     void notifySessionEnded();
     void markSessionActive() { has_active_client_ = true; }   // re-assert after AASession::start() returned
     // Close and re-create the listening socket (done by the accept thread within ~1 s). Used when a phone took the
@@ -52,6 +55,8 @@ private:
 
     ClientConnectedCallback client_callback_;
     void* client_user_data_;
+    AcceptFilterCallback accept_filter_;
+    void* accept_filter_data_;
     volatile bool rebind_;
     const char* volatile rebind_why_;
     unsigned sel_errs_;                 // consecutive select()/accept() errors on the listener

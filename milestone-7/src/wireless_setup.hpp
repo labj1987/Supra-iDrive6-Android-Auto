@@ -99,6 +99,11 @@ bool lastLinkSpokeWpp();
 // already sent its BCL startup magic gets nothing written into it.
 void setSppPeekMs(int ms);
 
+// Called each time the Wi-Fi details (WifiInfoResponse) were written to the phone: main.cpp opens the TCP gate for
+// that phone (phone_gate.hpp). NULL = none.
+typedef void (*CredentialsSentHook)();
+void setCredentialsSentHook(CredentialsSentHook hook);
+
 } // namespace nbt
 
 #endif // WIRELESS_SETUP_HPP

@@ -48,6 +48,8 @@ TcpServer::TcpServer(uint16_t port)
       has_active_client_(false),
       client_callback_(NULL),
       client_user_data_(NULL),
+      accept_filter_(NULL),
+      accept_filter_data_(NULL),
       rebind_(false),
       rebind_why_(NULL),
       sel_errs_(0),
@@ -353,6 +355,11 @@ void TcpServer::acceptLoop() {
                 inet_ntop(AF_INET, &local.sin_addr, lip_s, sizeof(lip_s));
                 printf("[TcpServer] refusing %s (not on %s: NBT_ALT_WIFI=%s)\n", client_ip, lip_s,
                        nbt::altWifiName(nbt::altWifiMode()));
+                close(client_fd);
+                continue;
+            }
+            // Only the phone that was just given the Wi-Fi details over Bluetooth (main.cpp, phone_gate.hpp).
+            if (accept_filter_ && !accept_filter_(hip, accept_filter_data_)) {
                 close(client_fd);
                 continue;
             }

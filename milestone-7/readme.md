@@ -966,6 +966,7 @@ On/off settings accept `1`/`0`; most also accept `on`/`off`, `yes`/`no` and `tru
 | `NBT_GEAR_ACTION` | `0` | Reverse-gear handling |
 | `NBT_CTL` | `0` | Single-instance control port (UDP 127.0.0.1:52790) |
 | `NBT_KEEP_PF` | - | No longer used: the packet filter is never switched off; wireless Android Auto needs the `pf_aa` rules (see [Troubleshooting](#troubleshooting)) |
+| `NBT_AA_GATE` | `0` | Turns off the phone gate. By default only the phone that was just given the Wi-Fi details over Bluetooth may open the wireless session (the first client on the Android Auto network after the hand-off, then only that address while its Bluetooth link is up and 30 s after); anything else is refused (`[Gate] ... REFUSED`) |
 
 ### Advanced / experimental
 

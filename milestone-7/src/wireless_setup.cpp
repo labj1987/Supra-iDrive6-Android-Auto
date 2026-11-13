@@ -263,6 +263,9 @@ static bool g_foreign = false;   // the link turned out to be BMW Connected (BCL
 static bool g_spokeWpp = false;  // a valid Android Auto wireless frame came back on this link
 static int g_peekMs = 0;         // setSppPeekMs()
 
+static CredentialsSentHook g_credHook = NULL;
+void setCredentialsSentHook(CredentialsSentHook hook) { g_credHook = hook; }
+
 void setSppPeekMs(int ms) { g_peekMs = ms < 0 ? 0 : (ms > 3000 ? 3000 : ms); }
 
 static void rxReset() { g_rxLen = 0; g_lastReadEnd = 0; g_foreign = false; g_spokeWpp = false; }
@@ -368,6 +371,7 @@ static int handleMsg(int fd, uint16_t id, const std::vector<uint8_t>& pl, const 
                ap.ssid.c_str(), ap.bssid.c_str(), ap.security);
         if (!writeAll(fd, resp)) return -1;
         sentInfo = true;
+        if (g_credHook) g_credHook();
     } else if (id == wpp::kWifiStartResponse) {
         uint64_t st3 = 0, st4 = 0;
         bool f3 = !pl.empty() && wpp::findVarintField(&pl[0], pl.size(), 3, st3);
@@ -445,6 +449,7 @@ bool runWirelessHandshake(int fd, const ApInfo& ap, uint16_t port, int timeout_m
                ap.ssid.c_str(), ap.bssid.c_str(), ap.security);
         if (!writeAll(fd, info)) return false;
         sentInfo = true;
+        if (g_credHook) g_credHook();
     }
     int startRespSeen = 0;
     bool startAcked = false;
