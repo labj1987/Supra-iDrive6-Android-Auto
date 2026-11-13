@@ -313,6 +313,16 @@ const unsigned    kActAutostart    = 24;
 const unsigned    kAutostartModel  = 34;
 const char* const kAutostartFlag   = "autostart";
 const long        kAutostartDelayS = 15;
+// Start automatically waits for the HMI to be up: its first hmi.graphicalContext (HmiMain3D publishes one for every
+// screen it shows), then kHmiSettleS more. No screen within kHmiReadyTimeoutS of onInit: no autostart this boot.
+const long        kHmiSettleS = 10;
+const long        kHmiReadyTimeoutS = 180;
+// One autostart that did not settle (the unit reset or the HMI restarted while nbt-aad was starting with it) switches
+// Start automatically off; this file says so, and the checkbox reads "Start automatically (off: start failed)"
+// (TextID 53) until it is ticked again. The file is <data dir>/autostart-failed.
+const char* const kAutostartFailedName = "autostart-failed";
+const unsigned    kAutostartTextModel = 35;   // <textIdModel id="35" textId="15">
+const unsigned    kTextAutostart = 15, kTextAutostartFailed = 53;
 // About page (hmiState 12): a non-selectable <list> on a Richtext raListModel holding a 1x1 table whose cell is
 // TextID 17. The HMI wraps that text to the screen width and honours "\n" in the text DB. Same pattern as BMW's
 // ActiveSeating intro (libActiveSeating StateTutorial::startWidgetInit: DataTableBase(&map, 1), map[0] = TextID(0x58),
@@ -1229,7 +1239,14 @@ void onCameraContext(int vc, const char* widget, const char* title) {
     }
 }
 
+long g_hmiReadyMono = 0;   // monoSec() of the first hmi.graphicalContext: the HMI is up and drawing its screens
+
 bool onGraphicalContext(void*, const bmw::BasicString<unsigned short>& value) {
+    if (!g_hmiReadyMono) {
+        g_hmiReadyMono = monoSec();
+        if (!g_hmiReadyMono) g_hmiReadyMono = 1;
+        alog("HMI ready: first %s (start with the car waits for this)", kGctxProperty);
+    }
     char text[300];
     size_t n = 0;
     const unsigned short* p = value.raw();
@@ -1912,6 +1929,8 @@ bool onVehicleFocus(void*, const bmw::Parcel& p) {
 void showAutostart(bmw::PluginApp* app) {
     bool on = autostartOn();
     app->updateModel(kAutostartModel, on);
+    bmw::TextID label(!on && fileExists(nbt::dataFile(kAutostartFailedName).c_str()) ? kTextAutostartFailed : kTextAutostart);
+    app->updateModel(kAutostartTextModel, label);
     g_autostartShown = true;
 }
 
@@ -1919,6 +1938,7 @@ void showAutostart(bmw::PluginApp* app) {
 // file is the state, and the checkbox is set from it afterwards.
 bool onAutostartToggle(void* /*app*/, const bmw::Parcel& /*args*/) {
     bool on = autostartOn();
+    if (!on) unlink(nbt::dataFile(kAutostartFailedName).c_str());   // ticked again: the notice goes
     flipFlag(kAutostartFlag, "start with the car", true);
     bool now = autostartOn();
     alog("menu: start with the car %s -> %s", on ? "on" : "off", now ? "on" : "off");
@@ -2284,8 +2304,10 @@ bool onMenuIdriveToggle(void* /*app*/, const bmw::Parcel& /*args*/) {
 // have no age, so the file counts boots with no window (boot_guard.hpp); rhmiapp-20..31 skipped counting there and
 // the guard never tripped on those cars.
 const char* const kBootGuardName = "bootguard";   // in the data dir
-const int  kBootGuardMax = 3;
+const int  kBootGuardMax = 1;   // one boot that did not settle is enough (was 3; issues #84 / #168: HMI restart loops)
 const long kBootGuardWindowS = 15 * 60;
+
+void bootGuardReset(const char* why);
 
 // true = autostart may go ahead (and this boot is recorded).
 bool bootGuardAllows() {
@@ -2303,9 +2325,20 @@ bool bootGuardAllows() {
     }
     int n = nbt::bootguard::recent(raw, nr, (long)now, kBootGuardWindowS, t, 8);
     if (!nbt::bootguard::allows(n, kBootGuardMax)) {
-        alog("start with the car: SKIPPED by the bootloop guard: the head unit restarted %d times within %ld min while "
-             "nbt-aad was starting with it. Start it from this menu (that resets the guard); send both USB logs.",
-             n, kBootGuardWindowS / 60);
+        // Switched off for good, not just skipped: the next boot must not try again either.
+        const nbt::FilePath flag = nbt::dataFile(kAutostartFlag), manual = nbt::appFile(kAutostartFlag);
+        if (fileExists(flag.c_str()) && unlink(flag.c_str()) != 0)
+            alog("start with the car: cannot remove %s (errno %d)", flag.c_str(), errno);
+        if (fileExists(manual.c_str()) && unlink(manual.c_str()) != 0)
+            alog("start with the car: cannot remove %s (errno %d, read-only?): remove it by hand", manual.c_str(), errno);
+        nbt::makeDataDir();
+        int fd = open(nbt::dataFile(kAutostartFailedName).c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd >= 0) { ssize_t w = write(fd, "1\n", 2); (void)w; fsync(fd); close(fd); }
+        bootGuardReset("start with the car switched off");
+        alog("start with the car: SWITCHED OFF: the last automatic start did not settle (the head unit or the HMI "
+             "restarted %d time(s) within %ld min while nbt-aad was starting with it). Start it from this menu; tick "
+             "Start automatically to turn it back on; send both USB logs.", n, kBootGuardWindowS / 60);
+        if (g_runApp) showAutostart(g_runApp);
         return false;
     }
     if (nbt::packaged()) nbt::makeDataDir();             // a hand install never made /var/opt/aa here
@@ -2341,8 +2374,17 @@ void serviceBootGuardSettle() {
 // From the status poll: once, kAutostartDelayS after onInit.
 void serviceAutostart() {
     if (g_autostartDone || !g_initTime || time(NULL) - g_initTime < kAutostartDelayS) return;
+    if (!autostartOn()) { g_autostartDone = true; return; }
+    // The HMI has to be fully up first (its first screen, then kHmiSettleS): starting under a half-loaded HMI is
+    // what the restart loops of issues #84 / #168 looked like.
+    if (!g_hmiReadyMono || monoSec() - g_hmiReadyMono < kHmiSettleS) {
+        if (time(NULL) - g_initTime < kHmiReadyTimeoutS) return;
+        g_autostartDone = true;
+        alog("start with the car: skipped this boot: the HMI showed no screen (hmi.graphicalContext) within %ld s",
+             kHmiReadyTimeoutS);
+        return;
+    }
     g_autostartDone = true;
-    if (!autostartOn()) return;
     DaemonState d = readDaemonState();
     if (d.pid != 0) { alog("start with the car: nbt-aad already running (pid %d)", d.pid); return; }
     if (!bootGuardAllows()) return;
