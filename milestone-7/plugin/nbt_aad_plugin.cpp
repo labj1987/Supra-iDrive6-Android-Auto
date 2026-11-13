@@ -119,22 +119,34 @@ void launchDaemon() {
     if (!fileExists(kDaemon)) { plog("launch: %s not found", kDaemon); return; }
 
     // Environment: ours first (getenv takes the first match), then the HMI's.
-    static char envbuf[16][160];
-    char* envp[16 + 64];
+    static char envbuf[64][256];
+    char* envp[64 + 64];
     int ne = 0;
     strcpy(envbuf[0], "PATH=/bin:/usr/bin:/opt/os/bin:/opt/sys/bin:/opt/core/bin:/opt/car/bin:/fs/sda0/opt/mm/bin");
     envp[ne++] = envbuf[0];
     int nb = 1;
     FILE* f = fopen(kDaemonEnv, "r");
     if (f) {
-        char line[160];
-        while (nb < 16 && fgets(line, sizeof(line), f)) {
+        char line[256];
+        while (nb < 64 && fgets(line, sizeof(line), f)) {
             size_t l = strlen(line);
+            if (l && line[l - 1] != '\n' && !feof(f)) {
+                // Longer than the buffer: not passed cut short (a cut value would win over the file). nbt-aad reads
+                // the full line from the file itself.
+                int c;
+                while ((c = fgetc(f)) != EOF && c != '\n') {}
+                plog("launch: a line of %s is longer than %u characters: left to nbt-aad to read", kDaemonEnv,
+                   (unsigned)sizeof(line) - 2);
+                continue;
+            }
             while (l && (line[l - 1] == '\n' || line[l - 1] == '\r' || line[l - 1] == ' ')) line[--l] = 0;
             if (!l || line[0] == '#' || !strchr(line, '=')) continue;
             strcpy(envbuf[nb], line);
             envp[ne++] = envbuf[nb++];
         }
+        // Whatever does not fit here is not lost: nbt-aad reads the whole file itself at start (src/env_file.hpp).
+        if (nb == 64 && fgets(line, sizeof(line), f))
+            plog("launch: %s has more than 63 settings: the rest is read by nbt-aad itself", kDaemonEnv);
         fclose(f);
     }
     for (char** e = environ; e && *e && ne < (int)(sizeof(envp) / sizeof(envp[0])) - 1; ++e) {

@@ -595,22 +595,36 @@ pid_t launchDaemon() {
     g_lastLaunch = now;
     if (!fileExists(nbt::daemonPath())) { alog("launch: %s not found", nbt::daemonPath()); return -1; }
 
-    static char envbuf[16][160];
-    char* envp[16 + 64];
+    static char envbuf[64][256];
+    char* envp[64 + 64];
     int ne = 0;
     strcpy(envbuf[0], "PATH=/bin:/usr/bin:/opt/os/bin:/opt/sys/bin:/opt/core/bin:/opt/car/bin:/fs/sda0/opt/mm/bin");
     envp[ne++] = envbuf[0];
     int nb = 1;
     FILE* f = openDaemonEnv();
     if (f) {
-        char line[160];
-        while (nb < 16 && fgets(line, sizeof(line), f)) {
+        char line[256];
+        while (nb < 64 && fgets(line, sizeof(line), f)) {
             size_t l = strlen(line);
+            if (l && line[l - 1] != '\n' && !feof(f)) {
+                // Longer than the buffer: not passed cut short (a cut value would win over the file). nbt-aad reads
+                // the full line from the file itself.
+                int c;
+                while ((c = fgetc(f)) != EOF && c != '\n') {}
+                alog("launch: a line of %s is longer than %u characters: left to nbt-aad to read",
+                     nbt::confFile(nbt::kDaemonEnvName).c_str(),
+                   (unsigned)sizeof(line) - 2);
+                continue;
+            }
             while (l && (line[l - 1] == '\n' || line[l - 1] == '\r' || line[l - 1] == ' ')) line[--l] = 0;
             if (!l || line[0] == '#' || !strchr(line, '=')) continue;
             strcpy(envbuf[nb], line);
             envp[ne++] = envbuf[nb++];
         }
+        // Whatever does not fit here is not lost: nbt-aad reads the whole file itself at start (src/env_file.hpp).
+        if (nb == 64 && fgets(line, sizeof(line), f))
+            alog("launch: %s has more than 63 settings: the rest is read by nbt-aad itself",
+                 nbt::confFile(nbt::kDaemonEnvName).c_str());
         fclose(f);
     }
     // No env file: nothing is added, the daemon's own defaults apply (Bluetooth audio unless "Use Native Audio instead

@@ -124,6 +124,7 @@
 #include "spp_rereg.hpp"
 #include "spp_link_policy.hpp"
 #include "../tools/pf_aa.hpp"
+#include "env_file.hpp"
 #include "spp_direction.hpp"
 #include "neutral_resume.hpp"
 #include "tile_process.hpp"
@@ -2315,6 +2316,10 @@ int main(int argc, char* argv[]) {
         nbt::printNbtAadLicense();
         return 0;
     }
+    // Every setting of nbt-aad.env (in the conf dir, nbt_paths.hpp: after initPaths), not only what the launcher
+    // passed (it used to pass 15): before anything reads a setting, NBT_LOG_FILE included. Values the launcher or
+    // shell already set win.
+    const nbt::envfile::Result envFile = nbt::envfile::apply(nbt::confFile(nbt::kDaemonEnvName).c_str());
     // NBT_LOG_FILE=/mnt/umass01200t7/nbt-aad-live.log: log straight to that file (fsync'd every 2 s by the main
     // loop). Otherwise the "Save logs to USB" checkbox decides (serviceUsbLog).
     const char* log_file = getenv("NBT_LOG_FILE");
@@ -2336,6 +2341,13 @@ int main(int argc, char* argv[]) {
     printf("[Favourites] native key previews, colour settings and release refresh enabled\n");
     printf("====================================================\n");
     printf("----------------------------------------------------\n");
+
+    if (envFile.found)
+        printf("[Main] %s: %d settings, %d of them not passed by the launcher and set from the file%s\n",
+               nbt::confFile(nbt::kDaemonEnvName).c_str(), envFile.settings, envFile.added,
+               envFile.skipped ? " (some lines are not NAME=value and were skipped)" : "");
+    else
+        printf("[Main] %s: none (defaults)\n", nbt::confFile(nbt::kDaemonEnvName).c_str());
 
     if (!ctlClaimOrForward()) return 0;   // a daemon is already running (second start from the iDrive menu)
 
