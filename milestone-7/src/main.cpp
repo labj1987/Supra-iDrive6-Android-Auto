@@ -898,6 +898,11 @@ static void gateArm() {
            "(%u s to connect)%s\n", (unsigned)(nbt::PhoneGate::kJoinWindowMs / 1000),
            gateEnabled() ? "" : " - gate OFF (NBT_AA_GATE=0)");
 }
+static void gateConfirm() {
+    pthread_mutex_lock(&g_gateMutex);
+    g_gate.confirm();
+    pthread_mutex_unlock(&g_gateMutex);
+}
 static void gateLinkAlive() {
     pthread_mutex_lock(&g_gateMutex);
     g_gate.linkAlive(gateNowMs());
@@ -1773,6 +1778,7 @@ static void startSession(int client_fd, nbt::TcpServer* server, nbt::Transport t
         pthread_mutex_unlock(&g_connectMutex);
         return;
     }
+    if (t == nbt::kTransportTcp) gateConfirm();   // a wireless Android Auto session started: lock the gate to this phone
     if (g_audioBackend) g_audioBackend->onSessionStarted();   // Bluetooth mode: request the car's BT source
     pthread_mutex_unlock(&g_connectMutex);
 }
